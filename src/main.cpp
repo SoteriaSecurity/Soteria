@@ -40,13 +40,88 @@ std::vector<std::string> loadClassNames(const std::string& file_path) {
     return class_names;
 }
 
+std::vector<std::tuple<cv::Rect, std::string>> postprocess(
+    const int64_t &image_width,
+    const int64_t &image_height,
+    std::vector<Ort::Value> &outputTensors,
+    const float confThreshold)
+{
+    std::vector<std::tuple<cv::Rect, std::string>> detections;
+    std::vector<std::tuple<cv::Rect, int>> oldBoxes; // to prevent overlap
+
+    // process the new detections
+    const auto* outputData = outputTensors.front().GetTensorData<float>();
+    const std::vector<int64_t> outputShape = outputTensors[0].GetTensorTypeAndShapeInfo().GetShape();
+    const std::vector<std::string> classNames = loadClassNames(std::filesystem::absolute("include/coco.names").string());
+    const size_t num_classes = outputShape[1] - 4;
+    std::cout << num_classes << "SKIBIDI" << std::endl;
+    const size_t num_detections = outputShape[2];
+
+    if (num_detections == 0) {
+        return detections;
+    }
+
+    for (size_t i = 0; i < num_detections; ++i) {
+        float confidence = outputData[4 * num_detections + i];
+        if (confidence >= confThreshold) {
+            int classId = 0;
+            float maxClassConf = 0;
+
+            for (int x = 0; x < 84; x++) {
+                std::cout << outputData[x * num_detections + i] << " ";
+            }
+            std::cout << std::endl;
+
+            // max class confidence => class ID
+            for (int c = 0; c < num_classes; ++c) {
+                const float classConf = outputData[(5 + c) * num_detections + i];
+                if (maxClassConf == 0) {
+                    maxClassConf = classConf;
+                    classId = c;
+                }
+
+                if (classConf > maxClassConf) {
+                    std::cout << "new " << classConf << " => " << classId << std::endl;
+                    maxClassConf = classConf;
+                    classId = c;
+                }
+            }
+
+            const float h = outputData[3 * num_detections + i];
+            const float w = outputData[2 * num_detections + i];
+            const float x = outputData[0 * num_detections + i]  - w / 2.0f;
+            const float y = outputData[1 * num_detections + i]  - h / 2.0f;
+
+            cv::Rect box(x, y, w, h);
+            bool alrChecked = false;
+
+            for (auto &old : oldBoxes) {
+                const cv::Rect oldBox = std::get<0>(old);
+                const int oldId = std::get<1>(old);
+                if (const cv::Rect overlap = oldBox & box; !overlap.empty() && oldId == classId) {
+                    alrChecked = true;
+                    break;
+                }
+            }
+
+            std::cout << "* (" << x << ", " << y << ") " << w << "x" << h <<
+               " - " << confidence << " [" << classNames[classId] + "]" << std::endl;
+            std::string label = classNames[classId] + " (" + std::to_string(confidence) + ")";
+
+            if (!alrChecked) {
+                oldBoxes.emplace_back(box, classId);
+                detections.emplace_back(box, label);
+            }
+        }
+    }
+
+    return detections;
+}
+
 int main() {
-    const int columnsPerOutput = 84;
     auto DARK_BLUE = cv::Scalar(255, 0, 0);
 
     // initialize onnx
-
-    // std::cout << "ONNX Runtime version: " << Ort::GetVersionString() << std::endl;
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "YOLOv8");
     std::wstring model_path = std::filesystem::absolute("include/yolov8n.onnx").wstring();
     Ort::SessionOptions session_options;
@@ -55,7 +130,6 @@ int main() {
     auto input_shape = session.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
     int64_t input_width = input_shape[2];
     int64_t input_height = input_shape[3];
-    // size_t input_tensor_size = input_width * input_height * 3;
 
     // initialize camera
     cv::VideoCapture cap(0, cv::CAP_DSHOW);
@@ -128,7 +202,7 @@ int main() {
             output_names_cstr[i] = output_names[i].c_str();
         }
 
-        auto output_tensors = session.Run(
+        auto outputTensors = session.Run(
             Ort::RunOptions{nullptr},
             input_names_cstr.data(),
             &input_tensor_onnx,
@@ -137,37 +211,20 @@ int main() {
             1
         );
 
-        // process the new detections
-        const auto* output_data = output_tensors.front().GetTensorData<float>();
-        size_t num_detections = output_tensors.front().GetTensorTypeAndShapeInfo().GetElementCount();
+        const std::vector<std::tuple<cv::Rect, std::string>> detections = postprocess(
+            input_width,
+            input_height,
+            outputTensors,
+            0.4f
+            );
 
-        if (num_detections % columnsPerOutput != 0) {
-            std::cerr << "Error: Output tensor dimensions mismatch." << std::endl;
-            return -1;
-        }
+        for (const auto &detection : detections) {
+            const cv::Rect& box = std::get<0>(detection);
+            const std::string& label = std::get<1>(detection);
 
-        std::vector<std::tuple<cv::Rect, int, float>> detections;
-
-        std::vector<std::string> class_names = loadClassNames(std::filesystem::absolute("include/coco.names").string());
-        for (size_t i = 0; i < num_detections / columnsPerOutput; ++i) {
-            const float* prediction = output_data + i * columnsPerOutput;
-            float confidence = prediction[4];
-            if (confidence >= 70) {
-                int w = static_cast<int>(prediction[2]);
-                int h = static_cast<int>(prediction[3]);
-                int x = static_cast<int>(prediction[0] - w / 2.0f);
-                int y = static_cast<int>(prediction[1] - h / 2.0f);
-
-                if (int classId = static_cast<int>(prediction[5]); classId >= 0 && classId < class_names.size()) {
-                    std::cout << class_names[classId] << ", " << confidence << std::endl;
-                    std::string label = class_names[classId] + " (" + std::to_string(static_cast<int>(confidence)) + ")";
-
-                    cv::Rect box(x, y, w, h);
-                    cv::rectangle(frame, box, DARK_BLUE, 2);
-                    cv::putText(frame, label, box.tl(), cv::FONT_HERSHEY_SIMPLEX,
-                        0.5, DARK_BLUE, 1);
-                }
-            }
+            cv::rectangle(frame, box, DARK_BLUE, 2);
+            cv::putText(frame, label, box.tl(), cv::FONT_HERSHEY_SIMPLEX,
+                0.5, DARK_BLUE, 1);
         }
 
         cv::imshow("Live Camera Feed", frame);
