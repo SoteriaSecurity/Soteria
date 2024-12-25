@@ -43,18 +43,16 @@ std::vector<std::string> loadClassNames(const std::string& file_path) {
 std::vector<std::tuple<cv::Rect, std::string>> postprocess(
     const int64_t &image_width,
     const int64_t &image_height,
-    std::vector<Ort::Value> &outputTensors,
-    const float confThreshold)
-{
+    const std::vector<Ort::Value> &outputTensors,
+    const float confThreshold
+    ) {
     std::vector<std::tuple<cv::Rect, std::string>> detections;
-    std::vector<std::tuple<cv::Rect, int>> oldBoxes; // to prevent overlap
+    std::vector<std::tuple<cv::Rect, int, float>> oldBoxes; // to prevent overlap
 
-    // process the new detections
     const auto* outputData = outputTensors.front().GetTensorData<float>();
     const std::vector<int64_t> outputShape = outputTensors[0].GetTensorTypeAndShapeInfo().GetShape();
     const std::vector<std::string> classNames = loadClassNames(std::filesystem::absolute("include/coco.names").string());
     const size_t num_classes = outputShape[1] - 4;
-    std::cout << num_classes << "SKIBIDI" << std::endl;
     const size_t num_detections = outputShape[2];
 
     if (num_detections == 0) {
@@ -62,54 +60,54 @@ std::vector<std::tuple<cv::Rect, std::string>> postprocess(
     }
 
     for (size_t i = 0; i < num_detections; ++i) {
-        float confidence = outputData[4 * num_detections + i];
+        int classId = 0;
+        float confidence = 0;
+
+        // max class confidence => class ID
+        for (int c = 0; c < num_classes; ++c) {
+            const float classConf = outputData[(4 + c) * num_detections + i];
+            if (classConf > confidence) {
+                confidence = classConf;
+                classId = c;
+            }
+        }
+
         if (confidence >= confThreshold) {
-            int classId = 0;
-            float maxClassConf = 0;
-
-            for (int x = 0; x < 84; x++) {
-                std::cout << outputData[x * num_detections + i] << " ";
-            }
-            std::cout << std::endl;
-
-            // max class confidence => class ID
-            for (int c = 0; c < num_classes; ++c) {
-                const float classConf = outputData[(5 + c) * num_detections + i];
-                if (maxClassConf == 0) {
-                    maxClassConf = classConf;
-                    classId = c;
-                }
-
-                if (classConf > maxClassConf) {
-                    std::cout << "new " << classConf << " => " << classId << std::endl;
-                    maxClassConf = classConf;
-                    classId = c;
-                }
-            }
-
-            const float h = outputData[3 * num_detections + i];
-            const float w = outputData[2 * num_detections + i];
-            const float x = outputData[0 * num_detections + i]  - w / 2.0f;
-            const float y = outputData[1 * num_detections + i]  - h / 2.0f;
+            const int h = static_cast<int>(outputData[3 * num_detections + i]);
+            const int w = static_cast<int>(outputData[2 * num_detections + i]);
+            const int x = static_cast<int>(outputData[0 * num_detections + i]  - w / 2.0);
+            const int y = static_cast<int>(outputData[1 * num_detections + i]  - h / 2.0);
 
             cv::Rect box(x, y, w, h);
             bool alrChecked = false;
 
             for (auto &old : oldBoxes) {
-                const cv::Rect oldBox = std::get<0>(old);
+                cv::Rect oldBox = std::get<0>(old);
                 const int oldId = std::get<1>(old);
-                if (const cv::Rect overlap = oldBox & box; !overlap.empty() && oldId == classId) {
+                const float oldConf = std::get<2>(old);
+
+                // swap old and new box if the new box should be taking priority
+                // (has a higher confidence than old)
+                if (oldConf < confidence) {
+                    const auto &temp = oldBox;
+                    oldBox = box;
+                    box = temp;
+                }
+
+                const cv::Rect overlap = oldBox & box;
+                // if the entire thing is overlap
+                // or a lot of it overlaps and its the same object
+                if (overlap.area() >= box.area() * 0.95 ||
+                    oldId == classId && overlap.area() >= 0.8 * box.area()) {
                     alrChecked = true;
                     break;
                 }
             }
 
-            std::cout << "* (" << x << ", " << y << ") " << w << "x" << h <<
-               " - " << confidence << " [" << classNames[classId] + "]" << std::endl;
-            std::string label = classNames[classId] + " (" + std::to_string(confidence) + ")";
-
             if (!alrChecked) {
-                oldBoxes.emplace_back(box, classId);
+                std::string label = classNames[classId] + " (" + std::to_string(confidence) + ")";
+
+                oldBoxes.emplace_back(box, classId, confidence);
                 detections.emplace_back(box, label);
             }
         }
@@ -215,7 +213,7 @@ int main() {
             input_width,
             input_height,
             outputTensors,
-            0.4f
+            0.6f
             );
 
         for (const auto &detection : detections) {
@@ -229,7 +227,7 @@ int main() {
 
         cv::imshow("Live Camera Feed", frame);
 
-        if (cv::waitKey(5) == 'q') {
+        if (cv::waitKey(1) == 'q') {
             break;
         }
     }
