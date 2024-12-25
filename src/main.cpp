@@ -2,6 +2,7 @@
 #include <iostream>
 #include <vector>
 #include <fstream>
+#include <cmath>
 
 #include <opencv2/opencv.hpp>
 #include <onnxruntime_cxx_api.h>
@@ -72,44 +73,47 @@ std::vector<std::tuple<cv::Rect, std::string>> postprocess(
             }
         }
 
-        if (confidence >= confThreshold) {
-            const int h = static_cast<int>(outputData[3 * num_detections + i]);
-            const int w = static_cast<int>(outputData[2 * num_detections + i]);
-            const int x = static_cast<int>(outputData[0 * num_detections + i]  - w / 2.0);
-            const int y = static_cast<int>(outputData[1 * num_detections + i]  - h / 2.0);
+        if (confidence < confThreshold) {
+            continue;
+        }
 
-            cv::Rect box(x, y, w, h);
-            bool alrChecked = false;
+        const int h = static_cast<int>(outputData[3 * num_detections + i]);
+        const int w = static_cast<int>(outputData[2 * num_detections + i]);
+        const int x = static_cast<int>(outputData[0 * num_detections + i]  - w / 2.0);
+        const int y = static_cast<int>(outputData[1 * num_detections + i]  - h / 2.0);
 
-            for (auto &old : oldBoxes) {
-                cv::Rect oldBox = std::get<0>(old);
-                const int oldId = std::get<1>(old);
-                const float oldConf = std::get<2>(old);
+        cv::Rect box(x, y, w, h);
+        bool alrChecked = false;
 
-                // swap old and new box if the new box should be taking priority
-                // (has a higher confidence than old)
-                if (oldConf < confidence) {
-                    const auto &temp = oldBox;
-                    oldBox = box;
-                    box = temp;
-                }
+        for (auto &old : oldBoxes) {
+            cv::Rect oldBox = std::get<0>(old);
+            const int oldId = std::get<1>(old);
+            const float oldConf = std::get<2>(old);
 
-                const cv::Rect overlap = oldBox & box;
-                // if the entire thing is overlap
-                // or a lot of it overlaps and its the same object
-                if (overlap.area() >= box.area() * 0.95 ||
-                    oldId == classId && overlap.area() >= 0.8 * box.area()) {
-                    alrChecked = true;
-                    break;
-                }
+            // swap old and new box if the new box should be taking priority
+            // (has a higher confidence than old)
+            if (oldConf < confidence) {
+                const auto &temp = oldBox;
+                oldBox = box;
+                box = temp;
             }
 
-            if (!alrChecked) {
-                std::string label = classNames[classId] + " (" + std::to_string(confidence) + ")";
-
-                oldBoxes.emplace_back(box, classId, confidence);
-                detections.emplace_back(box, label);
+            const cv::Rect overlap = oldBox & box;
+            // if the entire thing is overlap
+            // or a lot of it overlaps and its the same object
+            if (overlap.area() >= box.area() * 0.95 ||
+                oldId == classId && overlap.area() >= 0.8 * box.area()) {
+                alrChecked = true;
+                break;
             }
+        }
+
+        if (!alrChecked) {
+            const int confidenceAsPercent = static_cast<int>(std::round(confidence * 100));
+            std::string label = classNames[classId] + " (" + std::to_string(confidenceAsPercent) + ")";
+
+            oldBoxes.emplace_back(box, classId, confidence);
+            detections.emplace_back(box, label);
         }
     }
 
@@ -117,13 +121,29 @@ std::vector<std::tuple<cv::Rect, std::string>> postprocess(
 }
 
 int main() {
-    auto DARK_BLUE = cv::Scalar(255, 0, 0);
+    const auto DARK_BLUE = cv::Scalar(255, 0, 0);
+    constexpr bool isGPU = true; //*CHANGE* to your requirements if you wish, will fall back to CPU if GPU not available
 
     // initialize onnx
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "YOLOv8");
     std::wstring model_path = std::filesystem::absolute("include/yolov8n.onnx").wstring();
-    Ort::SessionOptions session_options;
-    Ort::Session session(env, model_path.c_str(), session_options);
+    Ort::SessionOptions sessionOptions;
+
+    std::vector<std::string> availableProviders = Ort::GetAvailableProviders();
+    auto cudaAvailable = std::find(availableProviders.begin(), availableProviders.end(), "CUDAExecutionProvider");
+
+    if (isGPU && cudaAvailable != availableProviders.end()) {
+        std::cout << "Inference device: GPU" << std::endl;
+        OrtCUDAProviderOptions cudaOption;
+        sessionOptions.AppendExecutionProvider_CUDA(cudaOption); // Append CUDA execution provider
+    } else {
+        if (isGPU) {
+            std::cout << "GPU is not supported by your ONNXRuntime build. Fallback to CPU." << std::endl;
+        }
+        std::cout << "Inference device: CPU" << std::endl;
+    }
+
+    Ort::Session session(env, model_path.c_str(), sessionOptions);
 
     auto input_shape = session.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
     int64_t input_width = input_shape[2];
