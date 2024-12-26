@@ -12,7 +12,7 @@ if __name__ == "__main__":
         print(f"Shape: {[dim.dim_value for dim in output.type.tensor_type.shape.dim]}")
 
     model = YOLO("../include/yolov8n.onnx")  # Replace with your model
-    results = model("image.jpg")  # Replace with your input image
+    results = model("../include/image.jpg")  # Replace with your input image
 
     print("1 1 1 1 1")
     print(results)

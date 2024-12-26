@@ -99,10 +99,11 @@ std::vector<std::tuple<cv::Rect, std::string>> postprocess(
             }
 
             const cv::Rect overlap = oldBox & box;
+            const cv::Rect largerBox = box.area() >= oldBox.area() ? box : oldBox;
             // if the entire thing is overlap
             // or a lot of it overlaps and its the same object
-            if (overlap.area() >= box.area() * 0.95 ||
-                oldId == classId && overlap.area() >= 0.8 * box.area()) {
+            if (overlap.area() >= largerBox.area() * 0.95 ||
+                oldId == classId && overlap.area() >= 0.8 * largerBox.area()) {
                 alrChecked = true;
                 break;
             }
@@ -149,30 +150,22 @@ int main() {
     int64_t input_width = input_shape[2];
     int64_t input_height = input_shape[3];
 
-    // initialize camera
-    cv::VideoCapture cap(0, cv::CAP_DSHOW);
+    // Initialize video file instead of camera
+    std::string video_path = std::filesystem::absolute("include/video.mp4").string(); // Specify your video file path here
+    cv::VideoCapture cap(video_path);
 
     if (!cap.isOpened()) {
-        std::cerr << "Error: Could not open the camera." << std::endl;
+        std::cerr << "Error: Could not open the video file." << std::endl;
         return -1;
     }
 
-    cv::namedWindow("Live Camera Feed", cv::WINDOW_AUTOSIZE);
+    cv::namedWindow("Video Feed", cv::WINDOW_AUTOSIZE);
     cv::Mat frame;
 
     while (true) {
-        cap >> frame;
-
-        if (frame.empty()) {
-            std::cerr << "Error: Empty frame captured." << std::endl;
-
-            // reinit cam (hope and pray)
-            cap.release();
-            cap.open(0, cv::CAP_V4L2);
-            if (!cap.isOpened()) {
-                std::cerr << "Failed to reinitialize capture." << std::endl;
-                break;
-            }
+        if (!cap.read(frame)) { // Read next frame from video
+            std::cout << "End of video reached or failed to read frame." << std::endl;
+            break;
         }
 
         // stores resized frames as channels in input_tensor
@@ -245,7 +238,7 @@ int main() {
                 0.5, DARK_BLUE, 1);
         }
 
-        cv::imshow("Live Camera Feed", frame);
+        cv::imshow("Video Feed", frame);
 
         if (cv::waitKey(1) == 'q') {
             break;
