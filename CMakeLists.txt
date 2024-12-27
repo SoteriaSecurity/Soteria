@@ -23,15 +23,24 @@ add_executable(video
         include/YoloOnnxModel.cpp
         include/YoloOnnxModel.h
 )
+add_executable(rtsp
+        src/rtsp.cpp
+        include/YoloOnnxModel.cpp
+        include/YoloOnnxModel.h
+)
+
 target_link_libraries(camera ${OpenCV_LIBS})
 target_link_libraries(video ${OpenCV_LIBS})
+target_link_libraries(rtsp ${OpenCV_LIBS})
 
 if(WIN32)
     target_link_libraries(camera "${ONNX_RUNTIME_LIB_DIR}/onnxruntime.lib")
     target_link_libraries(video "${ONNX_RUNTIME_LIB_DIR}/onnxruntime.lib")
+    target_link_libraries(rtsp "${ONNX_RUNTIME_LIB_DIR}/onnxruntime.lib")
 else()
     target_link_libraries(camera "${ONNX_RUNTIME_LIB_DIR}/libonnxruntime.so")
     target_link_libraries(video "${ONNX_RUNTIME_LIB_DIR}/libonnxruntime.so")
+    target_link_libraries(rtsp "${ONNX_RUNTIME_LIB_DIR}/libonnxruntime.so")
 endif()
 
 # Output build instructions

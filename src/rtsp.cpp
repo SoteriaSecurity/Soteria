@@ -36,14 +36,13 @@ void processFrames(YoloOnnxModel& yolo) {
             frameQueue.pop();
             lock.unlock();
 
-            auto detections = yolo.infer(frame, 0.5f, 0.4f);
-
+            auto detections = yolo.infer(frame, 0.4f, 0.4f);
             for (const auto& [box, label] : detections) {
                 cv::rectangle(frame, box, cv::Scalar(255, 0, 0), 2);
                 cv::putText(frame, label, box.tl(), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 0, 0));
             }
 
-            cv::imshow("Live Camera Feed", frame);
+            cv::imshow("Live Camera Feed (RTSP)", frame);
             if (cv::waitKey(1) == 'q') {
                 stopThreads = true;
             }
@@ -57,7 +56,8 @@ int main() {
     constexpr bool isGPU = false; // set to false if your GPU does not support CUDA 😭😭😭
 
     YoloOnnxModel yolo(pathToModel, pathToNames, isGPU);
-    cv::VideoCapture cap(0, cv::CAP_DSHOW);
+    cv::VideoCapture cap("rtsp://localhost:8554/stream", cv::CAP_FFMPEG); // make filename args in future
+    cap.set(cv::CAP_PROP_BUFFERSIZE, 3);
 
     if (!cap.isOpened()) {
         std::cerr << "Error: Could not open the camera." << std::endl;

@@ -57,11 +57,27 @@ std::vector<std::string> YoloOnnxModel::loadClassNames(const std::string& file_p
 }
 
 void YoloOnnxModel::preprocess(const cv::Mat& frame, std::vector<float>& input_tensor) const {
-    cv::Mat resized;
-    cv::resize(frame, resized, cv::Size(input_width_, input_height_));
-    resized.convertTo(resized, CV_32F, 1 / 255.0);
+    cv::Mat resized, padded;
+    float scale = std::min(static_cast<float>(input_width_) / static_cast<float>(frame.cols), static_cast<float>(input_height_) / static_cast<float>(frame.rows));
+
+    int new_width = static_cast<int>(static_cast<float>(frame.cols) * scale);
+    int new_height = static_cast<int>(static_cast<float>(frame.rows) * scale);
+
+    // Resize with the aspect ratio preserved
+    cv::resize(frame, resized, cv::Size(new_width, new_height));
+
+    // Pad to the input size
+    const int top = static_cast<int>((input_height_ - new_height)) / 2;
+    const int bottom = static_cast<int>(input_height_) - new_height - top;
+    const int left = static_cast<int>((input_width_ - new_width)) / 2;
+    const int right = static_cast<int>(input_width_) - new_width - left;
+
+    cv::copyMakeBorder(resized, padded, top, bottom, left, right, cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+    padded.convertTo(padded, CV_32F, 1 / 255.0);
+
+    // Split channels and flatten to input tensor
     std::vector<cv::Mat> channels(3);
-    cv::split(resized, channels);
+    cv::split(padded, channels);
     for (int c = 0; c < 3; ++c) {
         input_tensor.insert(input_tensor.end(), channels[c].begin<float>(), channels[c].end<float>());
     }
@@ -94,12 +110,9 @@ std::vector<std::tuple<cv::Rect, std::string>> YoloOnnxModel::postprocess(
     std::vector<cv::Rect> boxes;
     std::vector<float> confidences;
     std::vector<int> class_ids;
-    std::vector<std::tuple<cv::Rect, int, float>> oldBoxes; // to prevent overlap
 
     const auto* outputData = outputTensors.front().GetTensorData<float>();
     const std::vector<int64_t> outputShape = outputTensors[0].GetTensorTypeAndShapeInfo().GetShape();
-    const std::vector<std::string> classNames =
-        loadClassNames(std::filesystem::absolute("include/coco.names").string());
     const size_t num_classes = outputShape[1] - 4;
     const size_t num_detections = outputShape[2];
 
@@ -107,11 +120,15 @@ std::vector<std::tuple<cv::Rect, std::string>> YoloOnnxModel::postprocess(
         return detections;
     }
 
+    // Compute scale and padding used during preprocessing
+    float scale_x = static_cast<float>(image_width) / static_cast<float>(input_width_);
+    float scale_y = static_cast<float>(image_height) / static_cast<float>(input_height_);
+
     for (size_t i = 0; i < num_detections; ++i) {
         int classId = 0;
         float confidence = 0;
 
-        // max class confidence => class ID
+        // Find the class with the highest confidence
         for (int c = 0; c < num_classes; ++c) {
             const float classConf = outputData[(4 + c) * num_detections + i];
             if (classConf > confidence) {
@@ -121,14 +138,21 @@ std::vector<std::tuple<cv::Rect, std::string>> YoloOnnxModel::postprocess(
         }
 
         if (confidence >= confThreshold) {
-            const int h = static_cast<int>(outputData[3 * num_detections + i]);
-            const int w = static_cast<int>(outputData[2 * num_detections + i]);
-            const int x = static_cast<int>(outputData[0 * num_detections + i] - w / 2.0);
-            const int y = static_cast<int>(outputData[1 * num_detections + i] - h / 2.0);
+            const float cx = outputData[0 * num_detections + i]; // Center x
+            const float cy = outputData[1 * num_detections + i]; // Center y
+            const float w = outputData[2 * num_detections + i];  // Width
+            const float h = outputData[3 * num_detections + i];  // Height
 
-            boxes.emplace_back(cv::Rect(x, y, w, h));
-            confidences.push_back(confidence);
-            class_ids.push_back(classId);
+            int x = static_cast<int>((cx - w / 2.0) * scale_x); // Top-left x
+            int y = static_cast<int>((cy - h / 2.0) * scale_y); // Top-left y
+            int box_width = static_cast<int>(w * scale_x);       // Scaled width
+            int box_height = static_cast<int>(h * scale_y);      // Scaled height
+
+            if (box_width > 0 && box_height > 0) {
+                boxes.emplace_back(cv::Rect(x, y, box_width, box_height));
+                confidences.push_back(confidence);
+                class_ids.push_back(classId);
+            }
         }
     }
 
@@ -137,7 +161,7 @@ std::vector<std::tuple<cv::Rect, std::string>> YoloOnnxModel::postprocess(
     for (const int idx : indices) {
         const cv::Rect& box = boxes[idx];
         const int classId = class_ids[idx];
-        std::string label = classNames[classId] + " (" + std::to_string(static_cast<int>(confidences[idx] * 100)) + ")";
+        std::string label = class_names_[classId] + " (" + std::to_string(static_cast<int>(confidences[idx] * 100)) + "%)";
         detections.emplace_back(box, label);
     }
 

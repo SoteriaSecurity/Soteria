@@ -24,7 +24,7 @@ private:
     std::vector<const char*> input_names_;
     std::vector<const char*> output_names_;
 
-    std::vector<std::string> loadClassNames(const std::string& file_path);
+    static std::vector<std::string> loadClassNames(const std::string& file_path);
     std::vector<std::tuple<cv::Rect, std::string>> postprocess(const int64_t& image_width, const int64_t& image_height, const std::vector<Ort::Value>& output_tensors, float conf_threshold, float nms_threshold);
 };
 
