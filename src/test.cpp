@@ -9,7 +9,7 @@ int main() {
     std::cout << "ONNX Runtime version: " << Ort::GetVersionString() << std::endl;
     Ort::SessionOptions session_options;
 
-    std::wstring model_path = std::filesystem::absolute("include/yolov8n.onnx").wstring();
+    std::wstring model_path = std::filesystem::absolute("include/yolov8s.onnx").wstring();
     std::wcout << L"Loading model from: " << model_path << std::endl;
     try {
         Ort::Session session(env, model_path.c_str(), session_options);
